@@ -31,12 +31,15 @@ import sqlite3
 
 fuse.fuse_python_api = (0, 2)
 
+debug_flag = (os.getenv("debug") is not None)
+verbose_flag = (os.getenv("verbose") is not None)
+
 def debug(*args):
-    # print "---------"," ".join([str(s) for s in args])
-    pass
+    if debug_flag:
+        print "---------"," ".join([str(s) for s in args])
 def note(*args):
-    # print "*********"," ".join([str(s) for s in args])
-    pass
+    if verbose_flag:
+        print "*********"," ".join([str(s) for s in args])
 def warn(*args):
     print "*WARNING*"," ".join([str(s) for s in args])
 
@@ -370,7 +373,7 @@ class ArchiveFile:
                 debug("moved",self.current)
                 assert not os.path.exists(self.current)
             debug("setid",tag,dest)
-            fs.setId(tag,dest)
+            fs.setId(self.path,tag)
         self.file.close()
 
 class ArchiveFS(fuse.Fuse):
@@ -386,7 +389,7 @@ class ArchiveFS(fuse.Fuse):
         # This global is used by ArchiveFile
         # no clean way of doing this right in the current FUSE API
         global fs
-        print "mounting on",self.root
+        note("mounting on",self.root)
         fs = SqlFileStore(self.root)
         self.fs = fs
         self.file_class = ArchiveFile
