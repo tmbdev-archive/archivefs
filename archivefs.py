@@ -110,6 +110,8 @@ class SqlFileStore:
         return join(self.WORKING,md5hex(path))
     def is_working(self,path):
         return path[:len(self.WORKING)]==self.WORKING
+    def rename(self,path,newpath):
+        self.set(path,"path",newpath)
     def archive_path(self,id):
         assert "/" not in id
         dir = re.sub(r'(..)(..).*','\\1/\\2',id)
