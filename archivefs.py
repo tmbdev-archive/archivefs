@@ -61,10 +61,10 @@ class MyStat(fuse.Stat):
         self.st_mtime = 0
         self.st_ctime = 0
         self.st_nlink = 2
-        self.st_size = 4096
+        self.st_size = 0
         self.st_uid = 0
         self.st_gid = 0
-        self.st_blocks = 1
+        self.st_blocks = 0
         self.st_blksize = 4096
         self.st_rdev = 0
         self.st_dev = 0
@@ -199,7 +199,7 @@ class SqlFileStore:
         c.close()
     def chown(self,path,user):
         return
-    def mkentry(self,path,mode=0666,when=time(),id="!",symlink=None):
+    def mkentry(self,path,mode=0666|stat.S_IFREG,when=time(),id="!",symlink=None):
         """Make a new path entry for the given path and with the given mode.
         Uses the current time for all the file times."""
         debug("mkentry",path,mode,id,symlink)
@@ -232,10 +232,12 @@ class SqlFileStore:
         c = self.conn.cursor()
         c.execute("select * from files where path=?",(path,))
         file = c.fetchone()
+        c.close()
         if file is None: raise IOError(errno.ENOENT,path)
         id = file["id"]
         mode = file["mode"]
         st = MyStat()
+        debug("getattr id",id)
         if id!="!":
             rpath = fs.archive_path(id)
             if os.path.exists(rpath):
@@ -253,7 +255,7 @@ class SqlFileStore:
         st.st_mtime = int(file["mtime"])
         st.st_ctime = int(file["ctime"])
         st.st_mode = file["mode"]
-        c.close()
+        debug("here",st)
         return st
 
 class ArchiveFile:
@@ -395,8 +397,6 @@ class ArchiveFS(fuse.Fuse):
         self.file_class = ArchiveFile
         return fuse.Fuse.main(self,*a,**kw)
     def getattr(self, path, *args):
-        if len(args)>0:
-            not("getattr",path,args)
         return self.fs.getattr(path)
     def readdir(self, path, offset):
         for entry in self.fs.listdir(path):
@@ -423,7 +423,9 @@ class ArchiveFS(fuse.Fuse):
         self.fs.rename(pathfrom,pathto)
         return 0
     def truncate(self,path,len):
-        if len>0: raise IOError(errno.ENOSYS,path)
+        if len>0: 
+            warn("truncate not implemented",path,len)
+            raise IOError(errno.ENOSYS,path)
         self.fs.delete(path)
         self.fs.mkentry(path)
         return 0
