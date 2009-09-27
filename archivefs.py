@@ -412,6 +412,16 @@ class ArchiveFS(fuse.Fuse):
         stream,rpath = self.files.get(path)
         stream.flush()
         return 0
+    def statfs(self):
+        return os.statvfs(self.fs.DBFILE)
+
+#         sfs = fuse.StatVfs()
+#         sfs.f_bsize = 1024
+#         sfs.f_frsize = 1024
+#         sfs.f_block = 0
+#         sfs.f_free = 0
+#         sfs.f_avail = 0
+#         return sfs
 
 def main():
     usage="""ArchiveFS: an archival file system that stores only
