@@ -32,10 +32,10 @@ import sqlite3
 fuse.fuse_python_api = (0, 2)
 
 def debug(*args):
-    # print "---------"," ".join([str(s) for s in args])
+    print "---------"," ".join([str(s) for s in args])
     pass
 def note(*args):
-    # print "*********"," ".join([str(s) for s in args])
+    print "*********"," ".join([str(s) for s in args])
     pass
 def warn(*args):
     print "*WARNING*"," ".join([str(s) for s in args])
@@ -122,6 +122,7 @@ class SqlFileStore:
         return file["id"]
     def setId(self,path,id):
         """Update the current real path for the file."""
+        assert "/" not in id
         c = self.conn.cursor()
         c.execute("update files set id=? where path=?",(id,path))
         self.conn.commit()
@@ -233,9 +234,10 @@ class SqlFileStore:
         mode = file["mode"]
         st = MyStat()
         if id!="!":
-            if os.path.exists(id):
+            rpath = fs.archive_path(id)
+            if os.path.exists(rpath):
                 # use the actual files for size calculations
-                base = os.lstat(id)
+                base = os.lstat(rpath)
                 st.st_size = base.st_size
                 st.st_blocks = base.st_blocks
                 st.st_blksize = base.st_blksize
@@ -243,7 +245,7 @@ class SqlFileStore:
                 # if it's not a directory, it should have
                 # some file corresponding to it
                 if not (mode&stat.S_IFDIR):
-                    debug("getattr",id,"not found for",path)
+                    debug("getattr",rpath,"not found for",path)
         st.st_atime = int(file["atime"])
         st.st_mtime = int(file["mtime"])
         st.st_ctime = int(file["ctime"])
@@ -267,7 +269,7 @@ class ArchiveFile:
         self.working = 0
         # fs.checkdir(path)
         if flags&os.O_CREAT:
-            id = self.open_working(path,flags)
+            self.open_working(path,flags)
             fs.mkentry(path,mode=mode)
         else:
             self.working = 0
@@ -276,7 +278,7 @@ class ArchiveFile:
                 raise IOError(errno.ENOENT,path)
             id = file["id"]
             if id=="!": id = "/dev/null"
-            self.open_(id,os.O_RDONLY)
+            self.open_(fs.archive_path(id),os.O_RDONLY)
     def open_(self,path,flags,mode=0600):
         """Opens the given path and substitutes it as the
         file to be used for I/O operations."""
@@ -289,8 +291,8 @@ class ArchiveFile:
         self.fd = self.file.fileno()
     def open_working(self,path,flags):
         wpath = "_"+str(random.uniform(0.0,1.0))[2:]
-        id = join(fs.WORKING,wpath)
-        self.open_(id,flags|os.O_CREAT)
+        rpath = join(fs.WORKING,wpath)
+        self.open_(rpath,flags|os.O_CREAT)
         self.working = 1
     def switch_to_writable(self):
         if not self.working:
@@ -300,7 +302,8 @@ class ArchiveFile:
             id = fs.id(self.path)
             if id!="!":
                 note("copying",id)
-                with open(id,"r") as stream:
+                rpath = fs.archive_path(id)
+                with open(rpath,"r") as stream:
                     shutil.copyfileobj(stream,self.file)
             # note that we're not updating the id in the database
             # concurrent updates happen in separate copies and the
