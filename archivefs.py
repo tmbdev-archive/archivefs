@@ -69,6 +69,8 @@ class MyStat(fuse.Stat):
         self.st_rdev = 0
         self.st_dev = 0
 
+open_files = {}
+
 class SqlFileStore:
     """An abstraction that encapsulates the 'file system' semantics;
     methods are somewhat different from POSIX, since this actually
@@ -78,7 +80,7 @@ class SqlFileStore:
         self.DBFILE = join(base+"/DB")
         self.ARCHIVE = join(base+"/ARCHIVE")
         self.WORKING = join(base+"/WORKING")
-        self.conn = sqlite3.connect(self.DBFILE)
+        self.conn = sqlite3.connect(self.DBFILE,timeout=600.0)
         self.conn.row_factory = sqlite3.Row
         try: self.make_tables()
         except: pass
@@ -227,51 +229,69 @@ class SqlFileStore:
         content = content.encode("utf8")
         return content
     def getattr(self,path):
-        debug("getattr",path)
         path = normpath(path)
+
         c = self.conn.cursor()
         c.execute("select * from files where path=?",(path,))
         file = c.fetchone()
         c.close()
-        if file is None: raise IOError(errno.ENOENT,path)
+
+        if file is None:
+            debug("getattr",path,"not found")
+            raise IOError(errno.ENOENT,path)
+
         id = file["id"]
         mode = file["mode"]
         st = MyStat()
-        debug("getattr id",id)
-        if id!="!":
-            rpath = fs.archive_path(id)
-            if os.path.exists(rpath):
-                # use the actual files for size calculations
-                base = os.lstat(rpath)
-                st.st_size = base.st_size
-                st.st_blocks = base.st_blocks
-                st.st_blksize = base.st_blksize
-            else:
-                # if it's not a directory, it should have
-                # some file corresponding to it
-                if not (mode&stat.S_IFDIR):
-                    debug("getattr",rpath,"not found for",path)
         st.st_atime = int(file["atime"])
         st.st_mtime = int(file["mtime"])
         st.st_ctime = int(file["ctime"])
         st.st_mode = file["mode"]
-        debug("here",st)
+
+        working = open_files.get(path)
+        if working is not None:
+            working.file.flush()
+            base = os.fstat(working.file.fileno())
+            st.st_size = base.st_size
+            st.st_blocks = base.st_blocks
+            st.st_blksize = base.st_blksize
+            st.st_atime = base.st_atime
+            st.st_mtime = base.st_mtime
+            debug("getattr",path,"open",working,st.st_size)
+            return st
+        
+        rpath = fs.archive_path(id)
+        if os.path.exists(rpath):
+            base = os.lstat(rpath)
+            st.st_size = base.st_size
+            st.st_blocks = base.st_blocks
+            st.st_blksize = base.st_blksize
+            st.st_atime = base.st_atime
+            st.st_mtime = base.st_mtime
+            debug("getattr",path,"archive",rpath,st.st_size)
+            return st
+
+        if id!="!":
+            if not (mode&stat.S_IFDIR):
+                debug("getattr",path,"rpath doesn't exist",rpath)
+
+        debug("getattr",path,"!")
         return st
 
 class ArchiveFile:
     def __init__(self,path,flags,mode=0666):
         """Initializes an open ArchiveFile.  This
         implements the copy-on-write semantics."""
-        debug("...init",path,flags,mode)
+        debug("ArchiveFile",path,flags,mode)
         self.keep_cache = 0
         self.direct_io = 0
         self.path = path
         self.flags = flags
         self.mode = mode
-        self.changed = 0
         self.file = None
-        self.fd = None
+        self.changed = 0
         self.working = 0
+        self.position = 0
         # fs.checkdir(path)
         if flags&os.O_CREAT:
             self.open_working(path,flags)
@@ -286,77 +306,13 @@ class ArchiveFile:
                 self.open_("/dev/null",os.O_RDONLY)
             else:
                 self.open_(fs.archive_path(id),os.O_RDONLY)
-    def open_(self,path,flags,mode=0600):
-        """Opens the given path and substitutes it as the
-        file to be used for I/O operations."""
-        debug("...open_",path,flags,mode)
-        if self.file is not None:
-            self.file.close()
-        stream = os.open(path,flags,mode)
-        self.current = path
-        self.file = os.fdopen(stream,flag2mode(flags))
-        self.fd = self.file.fileno()
-    def open_working(self,path,flags):
-        wpath = "_"+str(random.uniform(0.0,1.0))[2:]
-        rpath = join(fs.WORKING,wpath)
-        self.open_(rpath,flags|os.O_CREAT)
-        self.working = 1
-    def switch_to_writable(self):
-        if not self.working:
-            self.open_working(self.path,self.flags)
-            # check whether the file contains previous content;
-            # if so, we copy it over before returning
-            id = fs.id(self.path)
-            if id!="!":
-                note("copying",id)
-                rpath = fs.archive_path(id)
-                with open(rpath,"r") as stream:
-                    shutil.copyfileobj(stream,self.file)
-            # note that we're not updating the id in the database
-            # concurrent updates happen in separate copies and the
-            # last close wins
-            self.working = 1
-
-    # this goes back to the store
-        
-    def fgetattr(self,*args):
-        return fs.getattr(self.path)
-
-    # these methods don't care what is open
-
-    def read(self, length, offset):
-        self.file.seek(offset)
-        return self.file.read(length)
-    def _fflush(self):
-        if 'w' in self.file.mode or 'a' in self.file.mode:
-            self.file.flush()
-    def fsync(self, isfsyncfile):
-        self._fflush()
-        if isfsyncfile and hasattr(os, 'fdatasync'):
-            os.fdatasync(self.fd)
-        else:
-            os.fsync(self.fd)
-    def flush(self):
-        self._fflush()
-        # cf. xmp_flush() in fusexmp_fh.c
-        os.close(os.dup(self.fd))
-
-    # these methods need to switch from a read-only file
-    # to a writable file if necessary
-        
-    def write(self, buf, offset):
-        self.switch_to_writable()
-        self.file.seek(offset)
-        self.file.write(buf)
-        return len(buf)
-    def ftruncate(self, len):
-        self.switch_to_writable()
-        self.file.truncate(len)
-
-    # this needs to check
+        open_files[path] = self
         
     def release(self, flags):
         debug("release",self.working,self.path)
+        open_files[self.path] = None
+        self.file.close()
+        self.file = None
         if self.working:
             tag = os.popen("md5sum %s | cut -f 1 -d ' '" % self.current).read()
             tag = tag[:-1]
@@ -376,7 +332,83 @@ class ArchiveFile:
                 assert not os.path.exists(self.current)
             debug("setid",tag,dest)
             fs.setId(self.path,tag)
-        self.file.close()
+
+    def open_(self,path,flags,mode=0600):
+        """Opens the given path and substitutes it as the
+        file to be used for I/O operations."""
+        debug("open_",path,flags,mode)
+        if self.file is not None:
+            self.file.close()
+            self.file = None
+        stream = os.open(path,flags,mode)
+        self.current = path
+        self.file = os.fdopen(stream,flag2mode(flags))
+    def open_working(self,path,flags):
+        wpath = "_"+str(random.uniform(0.0,1.0))[2:]
+        rpath = join(fs.WORKING,wpath)
+        self.open_(rpath,flags|os.O_CREAT)
+        self.working = 1
+    def switch_to_writable(self):
+        if not self.working:
+            self.open_working(self.path,self.flags)
+            # check whether the file contains previous content;
+            # if so, we copy it over before returning
+            id = fs.id(self.path)
+            if id!="!":
+                note("COPYING",self.path,id)
+                rpath = fs.archive_path(id)
+                with open(rpath,"r") as stream:
+                    shutil.copyfileobj(stream,self.file)
+            # note that we're not updating the id in the database
+            # concurrent updates happen in separate copies and the
+            # last close wins
+            self.working = 1
+
+    # this goes back to the store
+        
+    def fgetattr(self,*args):
+        debug("!!!fsgetattr",args)
+        return fs.getattr(self.path)
+
+    # these methods don't care what is open
+
+    def read(self, length, offset):
+        debug("read",self.path,length,"at",offset,
+              "delta",offset-self.position,"fd",self.file.fileno())
+        self.file.seek(offset)
+        result = self.file.read(length)
+        self.position = offset+len(result)
+        return result
+    def _fflush(self):
+        if 'w' in self.file.mode or 'a' in self.file.mode:
+            self.file.flush()
+    def fsync(self, isfsyncfile):
+        self._fflush()
+        if isfsyncfile and hasattr(os, 'fdatasync'):
+            os.fdatasync(self.file.fileno())
+        else:
+            os.fsync(self.file.fileno())
+    def flush(self):
+        self._fflush()
+        # cf. xmp_flush() in fusexmp_fh.c
+        os.close(os.dup(self.file.fileno()))
+
+    # these methods need to switch from a read-only file
+    # to a writable file if necessary
+        
+    def write(self, buf, offset):
+        debug("write",self.path,len(buf),"at",offset,
+              "delta",offset-self.position,"fd",self.file.fileno())
+        self.switch_to_writable()
+        self.file.seek(offset)
+        self.file.write(buf)
+        self.file.flush()
+        self.position = offset+len(buf)
+        return len(buf)
+    def ftruncate(self, len):
+        self.switch_to_writable()
+        self.file.truncate(len)
+
 
 class ArchiveFS(fuse.Fuse):
     def __init__(self, *args, **kw):
