@@ -263,7 +263,7 @@ class ArchiveFS(fuse.Fuse):
     def main(self,*a,**kw):
         self.fs = SqlFileStore(self.root)
         return fuse.Fuse.main(self,*a,**kw)
-    def getattr_(self, path):
+    def getattr(self, path):
         st = self.fs.getattr(path)
         active = self.files.get(path)
         if active is not None:
@@ -284,17 +284,6 @@ class ArchiveFS(fuse.Fuse):
             debug("getattr",path,"id",st.id,st.st_atime,st.st_mtime)
             return st
         debug("getattr",path,"default")
-        return st
-    def getattr(self,path):
-        st = self.getattr_(path)
-        now = time.time()
-        limit = now+1000
-        assert st.st_atime>limit/2
-        assert st.st_atime<limit
-        assert st.st_mtime>limit/2
-        assert st.st_mtime<limit
-        assert st.st_ctime>limit/2
-        assert st.st_ctime<limit
         return st
     def readdir(self, path, offset):
         for entry in self.fs.listdir(path):
