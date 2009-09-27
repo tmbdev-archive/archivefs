@@ -22,10 +22,9 @@ __author__ = "Thomas Breuel <www.9x9.com>"
 __version__ = "0.0"
 __license__ = "GNU General Public License (version 3)"
 
-import os,sys,re,math,stat,errno,fuse,sqlite3,random,shutil,hashlib
+import os,sys,re,math,stat,errno,fuse,sqlite3,random,shutil,hashlib,time
 from os.path import join,normpath,dirname,basename,relpath
 from os.path import split as splitpath
-from time import time
 from subprocess import *
 import sqlite3
 
@@ -65,17 +64,18 @@ def md5hex(data):
 def flags2mode(flags):
     md = {os.O_RDONLY: 'r', os.O_WRONLY: 'w', os.O_RDWR: 'w+'}
     m = md[flags & (os.O_RDONLY | os.O_WRONLY | os.O_RDWR)]
-    if flags | os.O_APPEND:
+    if flags & os.O_APPEND:
         m = m.replace('w', 'a', 1)
-    return m
+    return m+"b"
 
 class MyStat(fuse.Stat):
     def __init__(self,mode=0):
+        now = time.time()
         self.st_mode = mode
         self.st_ino = 0
-        self.st_atime = 0
-        self.st_mtime = 0
-        self.st_ctime = 0
+        self.st_atime = now
+        self.st_mtime = now
+        self.st_ctime = now
         self.st_size = 0
         self.st_uid = 0
         self.st_gid = 0
@@ -220,7 +220,7 @@ class SqlFileStore:
         self.set(path,"mtime",mtime)
     def chown(self,path,user):
         return
-    def mkentry(self,path,mode=0666|stat.S_IFREG,when=time(),id=None,symlink=None):
+    def mkentry(self,path,mode=0666|stat.S_IFREG,when=time.time(),id=None,symlink=None):
         """Make a new path entry for the given path and with the given mode.
         Uses the current time for all the file times."""
         debug("mkentry",path,mode,id,symlink)
@@ -242,7 +242,6 @@ class SqlFileStore:
         content = content.encode("utf8")
         return content
     def getattr(self,path):
-        debug("fs getattr",path)
         entry = self.entry(path)
         st = MyStat()
         st.st_mode = entry["mode"]
@@ -250,7 +249,6 @@ class SqlFileStore:
         st.st_mtime = int(entry["mtime"])
         st.st_ctime = int(entry["ctime"])
         st.id = entry["id"]
-        # debug("fs getattr",path,"done")
         return st
 
 class ArchiveFS(fuse.Fuse):
@@ -259,15 +257,13 @@ class ArchiveFS(fuse.Fuse):
         try:
             make_tables()
             self.mkdir("/",0777)
-            self.mkdir("/DUMMY",0777)
         except:
             pass
         self.files = {}
     def main(self,*a,**kw):
         self.fs = SqlFileStore(self.root)
         return fuse.Fuse.main(self,*a,**kw)
-    def getattr(self, path, *args):
-        debug("getattr",path)
+    def getattr_(self, path):
         st = self.fs.getattr(path)
         active = self.files.get(path)
         if active is not None:
@@ -278,18 +274,27 @@ class ArchiveFS(fuse.Fuse):
             st.st_blksize = base.st_blksize
             st.st_atime = base.st_atime
             st.st_mtime = base.st_mtime
-            debug("getattr active",rpath)
+            debug("getattr",path,"active",rpath,st.st_atime,st.st_mtime)
             return st
-        debug("st.id",st.id)
         if st.id is not None:
             base = os.lstat(self.fs.archive_path(st.id))
             st.st_size = base.st_size
             st.st_blocks = base.st_blocks
             st.st_blksize = base.st_blksize
-            st.st_atime = base.st_atime
-            st.st_mtime = base.st_mtime
-            debug("getattr id",st.id)
+            debug("getattr",path,"id",st.id,st.st_atime,st.st_mtime)
             return st
+        debug("getattr",path,"default")
+        return st
+    def getattr(self,path):
+        st = self.getattr_(path)
+        now = time.time()
+        limit = now+1000
+        assert st.st_atime>limit/2
+        assert st.st_atime<limit
+        assert st.st_mtime>limit/2
+        assert st.st_mtime<limit
+        assert st.st_ctime>limit/2
+        assert st.st_ctime<limit
         return st
     def readdir(self, path, offset):
         for entry in self.fs.listdir(path):
@@ -324,9 +329,10 @@ class ArchiveFS(fuse.Fuse):
         return 0
     def chown(self,path,*args):
         return 0
-    def utime(self,path,times):
+    def utime(self,path,times=None):
         if times == None:
-            times = (time.time(), time.time())
+            now = time.time()
+            times = (now,now)
         self.fs.utime(path,times[0],times[1])
     def readlink(self,path):
         content = self.fs.readlink(path)
@@ -345,18 +351,21 @@ class ArchiveFS(fuse.Fuse):
         return os.fdopen(os.open(path,flags,mode),flags2mode(flags))
     def open(self,path,flags):
         debug("open",path,flags)
-        entry = self.fs.entry(path)
-        if entry is None:
-            raise IOError(errno.ENOENT,path)
-        active = self.files.get(path)
-        if active is not None:
-            # we'll just open another stream for the same path
-            _,rpath = active
-        elif entry["id"] is not None:
-            rpath = self.fs.archive_path(entry["id"])
+        if flags&os.O_WRONLY:
+            id = self.fs.get(path,"id")
+            rpath = self.fs.working_path(path)
+            if id is not None:
+                old = self.fs.archive_path(id)
+                debug("copying",old,rpath)
+                shutil.copyfile(old,rpath)
+            self.files[path] = (self.osopen(rpath,flags),rpath)
         else:
-            rpath = "/dev/null"
-        self.files[path] = (self.osopen(rpath,flags),rpath)
+            id = self.fs.get(path,"id")
+            if id is not None:
+                rpath = self.fs.archive_path(id)
+            else:
+                rpath = "/dev/null"
+            self.files[path] = (self.osopen(rpath,flags),rpath)
         return 0
     def create(self,path,flags,mode):
         debug("create",path,flags,mode)
@@ -381,22 +390,9 @@ class ArchiveFS(fuse.Fuse):
                 shutil.move(rpath,dest)
                 debug("moved",rpath,dest,"for",path)
             self.fs.set(path,"id",id)
+            self.utime(path)
         debug("release",path,"done")
         return 0
-    def switch_to_writable(self,path):
-        debug("switch_to_writable",path)
-        stream,rpath = self.files.get(path)
-        if not self.fs.is_working(rpath):
-            id = self.fs.get(path,"id")
-            stream.close()
-            rpath = self.fs.working_path(path)
-            stream = self.osopen(rpath,flags)
-            if id is not None:
-                source = self.fs.archive_path(id)
-                note("COPYING",source,rpath)
-                with open(source,"r") as source_stream:
-                    shutil.copyfileobj(source_stream,stream)
-            self.files[path] = (stream,rpath)
     def fgetattr(self,path,fh=None):
         debug("fgetattr",path)
         return self.getattr(path)
@@ -404,17 +400,17 @@ class ArchiveFS(fuse.Fuse):
         debug("read",path,length,offset)
         stream,rpath = self.files.get(path)
         stream.seek(offset)
+        debug("?",stream.tell(),offset)
         return stream.read(length)
     def write(self,path,buf,offset,fh=None):
         debug("write",path,len(buf),offset)
-        self.switch_to_writable(path)
         stream,rpath = self.files.get(path)
         stream.seek(offset)
+        debug("?",stream.tell(),offset)
         stream.write(buf)
         return len(buf)
     def ftruncate(self,path,len,fh=None):
         debug("ftruncate",path,len)
-        self.switch_to_writable(path)
         stream,rpath = self.files.get(path)
         stream.truncate(len)
         return 0
