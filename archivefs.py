@@ -112,7 +112,7 @@ class SqlFileStore:
         return path[:len(self.WORKING)]==self.WORKING
     def archive_path(self,id):
         assert "/" not in id
-        dir = re.sub(r'(...)(...).*','\\1/\\2',id)
+        dir = re.sub(r'(..)(..).*','\\1/\\2',id)
         destdir = join(self.ARCHIVE,dir)
         if not os.path.exists(destdir):
             os.makedirs(destdir)
