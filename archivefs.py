@@ -122,7 +122,7 @@ class SqlFileStore:
         c = self.conn.cursor()
         c.execute("""
         create table files (
-        path text unique,
+        path text primary key,
         id text,
         mode integer,
         size integer,
@@ -132,8 +132,9 @@ class SqlFileStore:
         symlink text
         )
         """)
-        c.close()
+        c.execute("create index id on files (id)")
         self.conn.commit()
+        c.close()
     def entry(self,path,check=1):
         path = normpath(path)
         c = self.conn.cursor()
@@ -340,7 +341,7 @@ class ArchiveFS(fuse.Fuse):
         return os.fdopen(os.open(path,flags,mode),flags2mode(flags))
     def open(self,path,flags):
         debug("open",path,flags)
-        if flags&os.O_WRONLY:
+        if flags&2:
             id = self.fs.get(path,"id")
             rpath = self.fs.working_path(path)
             if id is not None:
@@ -383,31 +384,29 @@ class ArchiveFS(fuse.Fuse):
         debug("release",path,"done")
         return 0
     def fgetattr(self,path,fh=None):
-        debug("fgetattr",path)
+        # debug("fgetattr",path)
         return self.getattr(path)
     def read(self,path,length,offset,fh=None):
-        debug("read",path,length,offset)
+        # debug("read",path,length,offset)
         stream,rpath = self.files.get(path)
         stream.seek(offset)
-        debug("?",stream.tell(),offset)
         return stream.read(length)
     def write(self,path,buf,offset,fh=None):
-        debug("write",path,len(buf),offset)
+        # debug("write",path,len(buf),offset)
         stream,rpath = self.files.get(path)
         stream.seek(offset)
-        debug("?",stream.tell(),offset)
         stream.write(buf)
         return len(buf)
     def ftruncate(self,path,len,fh=None):
-        debug("ftruncate",path,len)
+        # debug("ftruncate",path,len)
         stream,rpath = self.files.get(path)
         stream.truncate(len)
         return 0
     def fsync(self,path,fdatasync,fh=None):
-        debug("fsync",path)
+        # debug("fsync",path)
         return 0
     def flush(self,path):
-        debug("flush",path)
+        # debug("flush",path)
         stream,rpath = self.files.get(path)
         stream.flush()
         return 0
