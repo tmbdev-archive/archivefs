@@ -32,10 +32,10 @@ import sqlite3
 fuse.fuse_python_api = (0, 2)
 
 def debug(*args):
-    print "---------"," ".join([str(s) for s in args])
+    # print "---------"," ".join([str(s) for s in args])
     pass
 def note(*args):
-    print "*********"," ".join([str(s) for s in args])
+    # print "*********"," ".join([str(s) for s in args])
     pass
 def warn(*args):
     print "*WARNING*"," ".join([str(s) for s in args])
