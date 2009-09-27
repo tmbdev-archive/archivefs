@@ -122,7 +122,7 @@ class SqlFileStore:
         return file["id"]
     def setId(self,path,id):
         """Update the current real path for the file."""
-        assert "/" not in id
+        assert "/" not in id,id
         c = self.conn.cursor()
         c.execute("update files set id=? where path=?",(id,path))
         self.conn.commit()
@@ -277,8 +277,10 @@ class ArchiveFile:
             if file is None:
                 raise IOError(errno.ENOENT,path)
             id = file["id"]
-            if id=="!": id = "/dev/null"
-            self.open_(fs.archive_path(id),os.O_RDONLY)
+            if id=="!":
+                self.open_("/dev/null",os.O_RDONLY)
+            else:
+                self.open_(fs.archive_path(id),os.O_RDONLY)
     def open_(self,path,flags,mode=0600):
         """Opens the given path and substitutes it as the
         file to be used for I/O operations."""
@@ -367,8 +369,8 @@ class ArchiveFile:
                 shutil.move(self.current,dest)
                 debug("moved",self.current)
                 assert not os.path.exists(self.current)
-            debug("setid",self.path,dest)
-            fs.setId(self.path,dest)
+            debug("setid",tag,dest)
+            fs.setId(tag,dest)
         self.file.close()
 
 class ArchiveFS(fuse.Fuse):
