@@ -27,20 +27,23 @@ from os.path import join,normpath,dirname,basename,relpath
 from os.path import split as splitpath
 from subprocess import *
 import sqlite3
+import logging
 
 fuse.fuse_python_api = (0, 2)
 
 debug_flag = (os.getenv("debug") is not None)
 verbose_flag = (os.getenv("verbose") is not None)
 
-def debug(*args):
-    if debug_flag:
-        print "---------"," ".join([str(s) for s in args])
-def note(*args):
-    if verbose_flag:
-        print "*********"," ".join([str(s) for s in args])
-def warn(*args):
-    print "*WARNING*"," ".join([str(s) for s in args])
+log = logging.getLogger()
+ch = logging.StreamHandler()
+log.addHandler(ch)
+
+if os.getenv("log")=="debug": log.setLevel(logging.DEBUG)
+elif os.getenv("log")=="info": log.setLevel(logging.INFO)
+
+if os.getenv("logfile") is not None:
+    fh = logging.FileHandler(os.getenv("logfile"))
+    log.addHandler(fh)
 
 def md5sum_old(rpath):
     id = os.popen("md5sum %s | cut -f 1 -d ' '" % rpath).read()
@@ -180,7 +183,7 @@ class SqlFileStore:
             raise IOError(errno.EINVAL,path)
     def delete(self,path):
         """Delete the given path unconditionally (no checks)."""
-        debug("delete",path)
+        log.debug("delete %s",path)
         path = normpath(path)
         c = self.conn.cursor()
         c.execute("delete from files where path=?",(path,))
@@ -188,7 +191,7 @@ class SqlFileStore:
         c.close()
     def rmdir(self,path):
         """Delete a directory, with the usual UNIX checks."""
-        debug("rmdir",path)
+        log.debug("rmdir %s",path)
         path = normpath(path)
         c = self.conn.cursor()
         c.execute("select * from files where path=?",(path,))
@@ -226,7 +229,7 @@ class SqlFileStore:
     def mkentry(self,path,mode=0666|stat.S_IFREG,when=time.time(),id=None,symlink=None):
         """Make a new path entry for the given path and with the given mode.
         Uses the current time for all the file times."""
-        debug("mkentry",path,mode,id,symlink)
+        log.debug("mkentry %s %s %s %s",path,mode,id,symlink)
         assert id is None or re.match(r'^[0-9a-z]+$',id)
         path = normpath(path)
         c = self.conn.cursor()
@@ -277,16 +280,16 @@ class ArchiveFS(fuse.Fuse):
             st.st_blksize = base.st_blksize
             st.st_atime = base.st_atime
             st.st_mtime = base.st_mtime
-            debug("getattr",path,"active",rpath,st.st_atime,st.st_mtime)
+            log.debug("getattr %s active %s %s %s",path,rpath,st.st_atime,st.st_mtime)
             return st
         if st.id is not None:
             base = os.lstat(self.fs.archive_path(st.id))
             st.st_size = base.st_size
             st.st_blocks = base.st_blocks
             st.st_blksize = base.st_blksize
-            debug("getattr",path,"id",st.id,st.st_atime,st.st_mtime)
+            log.debug("getattr %s id %s %s %s",path,st.id,st.st_atime,st.st_mtime)
             return st
-        debug("getattr",path,"default")
+        log.debug("getattr %s default",path)
         return st
     def readdir(self, path, offset):
         for entry in self.fs.listdir(path):
@@ -311,7 +314,7 @@ class ArchiveFS(fuse.Fuse):
         return 0
     def truncate(self,path,len):
         if len>0: 
-            warn("truncate not implemented",path,len)
+            log.warning("truncate not implemented %s %s",path,len)
             raise IOError(errno.ENOSYS,path)
         self.fs.delete(path)
         self.fs.mkentry(path)
@@ -328,13 +331,12 @@ class ArchiveFS(fuse.Fuse):
         self.fs.utime(path,times[0],times[1])
     def readlink(self,path):
         content = self.fs.readlink(path)
-        debug("readlink",path,"->",content)
+        log.debug("readlink %s -> %s",path,content)
         return content
     def symlink(self,content,path):
-        debug("symlink",content,path)
+        log.debug("symlink %s %s",content,path)
         # fs.checkdir(path)
         self.fs.symlink(content,path)
-        debug("symlink returning")
         return 0
 
     # here come the actual file operations
@@ -342,13 +344,13 @@ class ArchiveFS(fuse.Fuse):
     def osopen(self,path,flags,mode=0666):
         return os.fdopen(os.open(path,flags,mode),flags2mode(flags))
     def open(self,path,flags):
-        debug("open",path,flags)
+        log.debug("open %s %s",path,flags)
         if flags&2:
             id = self.fs.get(path,"id")
             rpath = self.fs.working_path(path)
             if id is not None:
                 old = self.fs.archive_path(id)
-                debug("copying",old,rpath)
+                log.debug("copying %s %s",old,rpath)
                 shutil.copyfile(old,rpath)
             self.files[path] = (self.osopen(rpath,flags),rpath)
         else:
@@ -360,14 +362,14 @@ class ArchiveFS(fuse.Fuse):
             self.files[path] = (self.osopen(rpath,flags),rpath)
         return 0
     def create(self,path,flags,mode):
-        debug("create",path,flags,mode)
+        log.debug("create %s %s %s",path,flags,mode)
         self.fs.delete(path)
         self.fs.mkentry(path,mode=(mode&07777)|stat.S_IFREG)
         rpath = self.fs.working_path(path)
         self.files[path] = (self.osopen(rpath,flags),rpath)
         return 0
     def release(self,path,flags):
-        debug("release",path,flags)
+        log.debug("release %s %s",path,flags)
         stream,rpath = self.files.get(path)
         del self.files[path]
         stream.close()
@@ -375,40 +377,40 @@ class ArchiveFS(fuse.Fuse):
             id = md5sum(rpath)
             dest = self.fs.archive_path(id)
             if os.path.exists(dest):
-                debug("EXISTS",dest,"for",path)
+                log.debug("EXISTS %s for %s",dest,path)
                 os.unlink(rpath)
             else:
                 os.chmod(rpath,0400)
                 shutil.move(rpath,dest)
-                debug("moved",rpath,dest,"for",path)
+                log.debug("moved %s %s for %s",rpath,dest,path)
             self.fs.set(path,"id",id)
             self.utime(path)
-        debug("release",path,"done")
+        log.debug("release %s done")
         return 0
     def fgetattr(self,path,fh=None):
-        # debug("fgetattr",path)
+        # log.debug("fgetattr",path)
         return self.getattr(path)
     def read(self,path,length,offset,fh=None):
-        # debug("read",path,length,offset)
+        # log.debug("read",path,length,offset)
         stream,rpath = self.files.get(path)
         stream.seek(offset)
         return stream.read(length)
     def write(self,path,buf,offset,fh=None):
-        # debug("write",path,len(buf),offset)
+        # log.debug("write",path,len(buf),offset)
         stream,rpath = self.files.get(path)
         stream.seek(offset)
         stream.write(buf)
         return len(buf)
     def ftruncate(self,path,len,fh=None):
-        # debug("ftruncate",path,len)
+        # log.debug("ftruncate",path,len)
         stream,rpath = self.files.get(path)
         stream.truncate(len)
         return 0
     def fsync(self,path,fdatasync,fh=None):
-        # debug("fsync",path)
+        # log.debug("fsync",path)
         return 0
     def flush(self,path):
-        # debug("flush",path)
+        # log.debug("flush",path)
         stream,rpath = self.files.get(path)
         stream.flush()
         return 0
