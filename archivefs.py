@@ -217,8 +217,11 @@ class SqlFileStore:
         if dir[-1]!="/": dir += "/"
         entries = [ '.', '..' ]
         c = self.conn.cursor()
-        c.execute("select * from files where path like ? and path not like ?",
-                 (dir+"%",dir+"%/%"))
+        start = dir
+        end = dir[:-1]+chr(ord(dir[-1])+1)
+        log.debug("listdir query %s %s",start,end)
+        c.execute("select * from files where path>=? and path<? and path not like ?",
+                 (start,end,dir+"%/%"))
         prefix = len(dir)
         for file in c:
             name = file["path"][prefix:]
