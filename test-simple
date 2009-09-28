@@ -1,0 +1,21 @@
+#!/bin/sh -x
+
+rm -f python.*.log
+mkdir /tmp/af-data-$$
+mkdir /tmp/af-test-$$
+xterm -geometry 80x64 -e "set -x; log=debug log python archivefs.py -o root=/tmp/af-data-$$ -f /tmp/af-test-$$; sleep 1" &
+while ! df /tmp/af-test-$$ | grep archivefs.py; do sleep 1; done
+cp -av ~/hello /tmp/af-test-$$/hello
+( cd /tmp/af-test-$$/hello && tar -zxvf - ) < test-simple.tgz
+(
+cd /tmp/af-test-$$/hello
+make clean
+make
+bash -i
+)
+sleep 1
+fusermount -u /tmp/af-test-$$
+sleep 1
+rm -rf /tmp/af-data-$$
+sleep 1
+rmdir /tmp/af-test-$$

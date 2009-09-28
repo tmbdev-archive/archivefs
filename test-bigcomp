@@ -1,0 +1,21 @@
+#!/bin/sh -x
+
+rm -f python.*.log
+mkdir /tmp/af-data-$$
+mkdir /tmp/af-test-$$
+set -x; log=debug logfile=/tmp/af-log-$$ python archivefs.py -o root=/tmp/af-data-$$ /tmp/af-test-$$
+while ! df /tmp/af-test-$$ | grep archivefs.py; do sleep 1; done
+(
+cd /tmp/af-test-$$
+cp -av /home/tmb/hg/iulib iulib
+cd iulib
+scons -c
+scons -j 4
+bash -i
+)
+sleep 1
+fusermount -u /tmp/af-test-$$
+sleep 1
+rm -rf /tmp/af-data-$$
+sleep 1
+rmdir /tmp/af-test-$$
