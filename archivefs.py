@@ -18,6 +18,10 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
+# MISC NOTES
+# - when something isn't working, check whether a function is returning
+#   a unicode string; the Fuse API just fails with no error message
+
 __author__ = "Thomas Breuel <www.9x9.com>"
 __version__ = "0.0"
 __license__ = "GNU General Public License (version 3)"
@@ -168,6 +172,12 @@ class SqlFileStore:
         c.close()
         if row is None: return None
         return row[0]
+    def instances(self,id):
+        c = self.conn.cursor()
+        c.execute("select path from files where id=?",(id,))
+        for row in c:
+            yield row[0]
+        c.close()
     def mode(self,path):
         return self.get(path,"mode")
     def exists(self,path):
@@ -416,6 +426,38 @@ class ArchiveFS(fuse.Fuse):
         return 0
     def statfs(self):
         return os.statvfs(self.fs.DBFILE)
+    def getxattr_(self,path,key):
+        log.debug("getxattr_ %s %s",path,key)
+        if key=="user._id":
+            return self.fs.get(path,"id")
+        elif key=="user._storage":
+            return self.fs.archive_path(self.fs.get(path,"id"))
+        elif key=="user._instances":
+            result = ""
+            for instance in self.fs.instances(self.fs.get(path,"id")):
+                if result!="": result += "\n"
+                result += instance
+            return result
+        else:
+            raise IOError(errno.EINVAL,path)
+    def listxattr_(self,path):
+        return ["user._id","user._storage","user._instances"]
+    def setxattr_(self,path,key,value):
+        raise IOError(errno.EINVAL,path)
+    def getxattr(self,path,key,size):
+        s = self.getxattr_(path,key).encode("utf8")
+        log.debug("getxattr %s %s %d %s",path,key,size,re.sub(r'\n','|',s)[:40])
+        if size==0: 
+            return len(s)
+        else:
+            return s
+    def listxattr(self,path,size):
+        l = self.listxattr_(path)
+        log.debug("listxattr %s %d %s",path,size,l)
+        if size==0: 
+            return len(l)+len("".join(l))
+        else:
+            return l
 
 #         sfs = fuse.StatVfs()
 #         sfs.f_bsize = 1024
