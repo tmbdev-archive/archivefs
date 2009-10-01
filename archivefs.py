@@ -233,11 +233,8 @@ class SqlFileStore:
         dir = nnormpath(path)
         entries = [ '.', '..' ]
         c = self.conn.cursor()
-        start = dir
-        end = dir[:-1]+chr(ord(dir[-1])+1)
-        log.debug("listdir query %s %s",start,end)
         c.execute("select * from files where dir=?",(dir,))
-        if dir[-1]!="/": dir += "/"
+        dir += "/"
         prefix = len(dir)
         for file in c:
             name = file["path"][prefix:]
