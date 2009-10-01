@@ -27,11 +27,26 @@ __version__ = "0.0"
 __license__ = "GNU General Public License (version 3)"
 
 import os,sys,re,math,stat,errno,fuse,sqlite3,random,shutil,hashlib,time
-from os.path import join,normpath,dirname,basename,relpath
+from os.path import join,basename,relpath
 from os.path import split as splitpath
 from subprocess import *
 import sqlite3
 import logging
+
+def ndirname(s):
+    """Normalized dirname is like regular dirname, but
+    it returns "" for the root directory (rather than "/",
+    which is inconsistent)."""
+    dir = os.path.dirname(s)
+    if dir=="/": dir = ""
+    return dir
+def nnormpath(s):
+    """Normalized dirname is like regular dirname, but
+    it returns "" for the root directory (rather than "/",
+    which is inconsistent)."""
+    path = os.path.normpath(s)
+    if path=="/": path = ""
+    return path
 
 fuse.fuse_python_api = (0, 2)
 
@@ -132,6 +147,7 @@ class SqlFileStore:
         c.execute("""
         create table files (
         path text primary key,
+        dir text,
         id text,
         mode integer,
         size integer,
@@ -142,10 +158,11 @@ class SqlFileStore:
         )
         """)
         c.execute("create index id on files (id)")
+        c.execute("create index dir on files (dir)")
         self.conn.commit()
         c.close()
     def entry(self,path,check=1):
-        path = normpath(path)
+        path = nnormpath(path)
         c = self.conn.cursor()
         c.execute("select * from files where path=?",(path,))
         entry = c.fetchone()
@@ -154,7 +171,7 @@ class SqlFileStore:
         c.close()
         return entry
     def set(self,path,key,value,check=1):
-        path = normpath(path)
+        path = nnormpath(path)
         c = self.conn.cursor()
         c.execute("update files set %s=? where path=?"%key,(value,path))
         self.conn.commit()
@@ -163,7 +180,7 @@ class SqlFileStore:
             raise IOError(errno.ENOENT,path)
         c.close()
     def get(self,path,key,check=1):
-        path = normpath(path)
+        path = nnormpath(path)
         c = self.conn.cursor()
         c.execute("select %s from files where path=?"%key,(path,))
         row = c.fetchone()
@@ -188,13 +205,13 @@ class SqlFileStore:
         if mode is None: return 0
         return mode&stat.S_IFDIR
     def checkdir(self,path):
-        dir = dirname(path)
+        dir = ndirname(path)
         if not self.isdir(path):
             raise IOError(errno.EINVAL,path)
     def delete(self,path):
         """Delete the given path unconditionally (no checks)."""
         log.debug("delete %s",path)
-        path = normpath(path)
+        path = nnormpath(path)
         c = self.conn.cursor()
         c.execute("delete from files where path=?",(path,))
         self.conn.commit()
@@ -202,7 +219,7 @@ class SqlFileStore:
     def rmdir(self,path):
         """Delete a directory, with the usual UNIX checks."""
         log.debug("rmdir %s",path)
-        path = normpath(path)
+        path = nnormpath(path)
         c = self.conn.cursor()
         c.execute("select * from files where path=?",(path,))
         if c.fetchone() is None: raise IOError(errno.ENOENT,path)
@@ -213,20 +230,18 @@ class SqlFileStore:
         c.close()
     def listdir(self,path):
         """Return a list of the entries in the given directory."""
-        dir = normpath(path)
-        if dir[-1]!="/": dir += "/"
+        dir = nnormpath(path)
         entries = [ '.', '..' ]
         c = self.conn.cursor()
         start = dir
         end = dir[:-1]+chr(ord(dir[-1])+1)
         log.debug("listdir query %s %s",start,end)
-        c.execute("select * from files where path>=? and path<? and path not like ?",
-                 (start,end,dir+"%/%"))
+        c.execute("select * from files where dir=?",(dir,))
+        if dir[-1]!="/": dir += "/"
         prefix = len(dir)
         for file in c:
             name = file["path"][prefix:]
             if name=="": continue
-            if "/" in name: continue
             entries += [name]
         for entry in entries:
             yield entry.encode("utf8")
@@ -245,13 +260,14 @@ class SqlFileStore:
         Uses the current time for all the file times."""
         log.debug("mkentry %s %s %s %s",path,mode,id,symlink)
         assert id is None or re.match(r'^[0-9a-z]+$',id)
-        path = normpath(path)
+        path = nnormpath(path)
+        dir = ndirname(path)
         c = self.conn.cursor()
         c.execute("""
             insert or replace into files
-            (path,mode,atime,mtime,ctime,id,symlink)
-            values (?,?,?,?,?,?,?)
-        """,(path,mode,when,when,when,id,symlink))
+            (path,mode,atime,mtime,ctime,id,symlink,dir)
+            values (?,?,?,?,?,?,?,?)
+        """,(path,mode,when,when,when,id,symlink,dir))
         self.conn.commit()
         c.close()
     def symlink(self,content,path):
