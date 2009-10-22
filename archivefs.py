@@ -223,7 +223,7 @@ class SqlFileStore:
         c = self.conn.cursor()
         c.execute("select * from files where path=?",(path,))
         if c.fetchone() is None: raise IOError(errno.ENOENT,path)
-        c.execute("select * from files where path like ?",(path+"/%",))
+        c.execute("select * from files where path>=? and path<?",(path+"/",path+chr(ord("/")+1)))
         if c.fetchone() is not None: raise IOError(errno.ENOTEMPTY,path)
         c.execute("delete from files where path=?",(path,))
         self.conn.commit()
